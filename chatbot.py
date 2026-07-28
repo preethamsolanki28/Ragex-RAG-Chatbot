@@ -1,7 +1,7 @@
 import os
 
 from dotenv import load_dotenv
-from google import genai
+from groq import Groq
 
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
@@ -9,18 +9,18 @@ from langchain_chroma import Chroma
 # STEP 1 : Load the environment variables
 # Reads variables from the .env file
 load_dotenv()
-api_key = os.getenv("GEMINI_API_KEY")
+
+api_key = os.getenv("GROQ_API_KEY")
 
 if not api_key:
-    raise ValueError("GEMINI_API_KEY not found in .env file")
+    raise ValueError("GROQ_API_KEY not found in .env file")
 
-# STEP 2 : Initialize Gemini
-client = genai.Client(api_key=api_key)
+# STEP 2 : Initialize the Groq client
+client = Groq(api_key=api_key)
 
 # STEP 3 : Load the embedding model
-# IMPORTANT:
-# The embedding model converts the user's question into a
-# vector so ChromaDB can perform semantic search.
+# The embedding model converts the user's question into
+# a vector so ChromaDB can perform semantic search.
 embedding_model = HuggingFaceEmbeddings(
     model_name="sentence-transformers/all-MiniLM-L6-v2"
 )
@@ -56,7 +56,7 @@ while True:
         for doc in results
     )
 
-    # Create the prompt for Gemini
+    # Create the prompt for the LLM
     prompt = f"""
     You are a helpful AI assistant.
     Answer ONLY using the provided context.
@@ -64,17 +64,24 @@ while True:
     "I couldn't find that information in the provided documents."
     Context:
     {context}
+
     Question:
     {query}
     """
 
-    # Generate the answer using Gemini
-    response = client.models.generate_content(
-        model="gemini-3.6-flash",
-        contents=prompt
+    # Generate the answer using Groq
+    response = client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=[
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ],
+        temperature=0
     )
 
     # Display the answer
     print("\nAnswer:\n")
-    print(response.text)
+    print(response.choices[0].message.content)
     print("-" * 70)
