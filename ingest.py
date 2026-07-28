@@ -18,8 +18,9 @@ splitter = RecursiveCharacterTextSplitter(
     chunk_overlap=100
 )
 
-# List that will store chunks from every PDF
-all_chunks = []
+# Lists that will store all chunks and their metadata
+texts = []
+metadatas = []
 
 # Read every PDF one by one
 for pdf in pdf_files:
@@ -29,21 +30,33 @@ for pdf in pdf_files:
     # Open the current PDF
     reader = PdfReader(pdf)
 
-    # Extract text from every page
-    text = "\n".join(
-        page.extract_text() or ""
-        for page in reader.pages
-    )
+    # Read every page separately
+    for page_number, page in enumerate(reader.pages, start=1):
 
-    # Split the extracted text into chunks
-    chunks = splitter.split_text(text)
+        # Extract text from the current page
+        page_text = page.extract_text() or ""
 
-    print(f"Created {len(chunks)} chunks.\n")
+        # Skip empty pages
+        if not page_text.strip():
+            continue
 
-    # Add the chunks to the main list
-    all_chunks.extend(chunks)
+        # Split the page into chunks
+        chunks = splitter.split_text(page_text)
 
-print(f"Total chunks from all PDFs: {len(all_chunks)}")
+        # Store each chunk along with its metadata
+        for chunk in chunks:
+            texts.append(chunk)
+
+            metadatas.append(
+                {
+                    "source": pdf.name,
+                    "page": page_number
+                }
+            )
+
+    print(f"Finished processing {pdf.name}")
+
+print(f"\nTotal chunks from all PDFs: {len(texts)}")
 
 # Load the embedding model
 embedding_model = HuggingFaceEmbeddings(
@@ -55,10 +68,12 @@ embedding_model = HuggingFaceEmbeddings(
 # - Creates embeddings
 # - Stores the embeddings
 # - Stores the original text
+# - Stores the metadata
 # - Saves everything inside the chroma_db folder
 
 db = Chroma.from_texts(
-    texts=all_chunks,
+    texts=texts,
+    metadatas=metadatas,
     embedding=embedding_model,
     persist_directory="chroma_db"
 )

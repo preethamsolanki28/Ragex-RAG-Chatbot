@@ -59,9 +59,13 @@ while True:
     # Create the prompt for the LLM
     prompt = f"""
     You are a helpful AI assistant.
+
     Answer ONLY using the provided context.
+
     If the answer is not present in the context, reply exactly:
+
     "I couldn't find that information in the provided documents."
+
     Context:
     {context}
 
@@ -84,4 +88,21 @@ while True:
     # Display the answer
     print("\nAnswer:\n")
     print(response.choices[0].message.content)
+
+    print("\nSources:\n")
+
+    # Avoid printing duplicate sources
+    seen = set()
+
+    for doc in results:
+
+        source = doc.metadata["source"]
+        page = doc.metadata["page"]
+
+        citation = (source, page)
+
+        if citation not in seen:
+            print(f"{source} (Page {page})")
+            seen.add(citation)
+
     print("-" * 70)
