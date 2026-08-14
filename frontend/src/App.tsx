@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import ChatPage from './pages/ChatPage'
 
 const API_URL = 'http://127.0.0.1:8000'
@@ -15,8 +15,11 @@ type LoginResponse = {
   user: User
 }
 
-
-function LoginPage({ onLogin }: { onLogin: (user: User, token: string) => void }) {
+function LoginPage({
+  onLogin,
+}: {
+  onLogin: (user: User, token: string) => void
+}) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
@@ -52,7 +55,6 @@ function LoginPage({ onLogin }: { onLogin: (user: User, token: string) => void }
       localStorage.setItem('user', JSON.stringify(loginData.user))
 
       onLogin(loginData.user, loginData.access_token)
-
     } catch (error) {
       if (error instanceof Error) {
         setError(error.message)
@@ -174,7 +176,6 @@ function LoginPage({ onLogin }: { onLogin: (user: User, token: string) => void }
   )
 }
 
-
 function Sidebar({
   user,
   onLogout,
@@ -253,7 +254,6 @@ function Sidebar({
   )
 }
 
-
 function MainApplication({
   user,
   onLogout,
@@ -269,25 +269,53 @@ function MainApplication({
   )
 }
 
-
 function App() {
-  const [user, setUser] = useState<User | null>(() => {
-    const storedUser = localStorage.getItem('user')
+  const [user, setUser] = useState<User | null>(null)
+  const [checkingSession, setCheckingSession] = useState(true)
 
-    if (!storedUser) {
-      return null
+  useEffect(() => {
+    const validateSession = async () => {
+      const token = localStorage.getItem('access_token')
+
+      if (!token) {
+        setCheckingSession(false)
+        return
+      }
+
+      try {
+        const response = await fetch(`${API_URL}/auth/me`, {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        })
+
+        if (!response.ok) {
+          localStorage.removeItem('access_token')
+          localStorage.removeItem('user')
+          setUser(null)
+          return
+        }
+
+        const currentUser = (await response.json()) as User
+
+        localStorage.setItem('user', JSON.stringify(currentUser))
+        setUser(currentUser)
+
+      } catch (error) {
+        console.error(
+          'Failed to validate authentication session:',
+          error
+        )
+      } finally {
+        setCheckingSession(false)
+      }
     }
 
-    try {
-      return JSON.parse(storedUser)
-    } catch {
-      localStorage.removeItem('user')
-      localStorage.removeItem('access_token')
-      return null
-    }
-  })
+    validateSession()
+  }, [])
 
-  const handleLogin = (loggedInUser: User) => {
+  const handleLogin = (loggedInUser: User, _token: string) => {
     setUser(loggedInUser)
   }
 
@@ -295,6 +323,22 @@ function App() {
     localStorage.removeItem('access_token')
     localStorage.removeItem('user')
     setUser(null)
+  }
+
+  if (checkingSession) {
+    return (
+      <main className="min-h-screen bg-[#faf8ff] text-[#131b2e] flex items-center justify-center">
+        <div className="flex flex-col items-center gap-4">
+
+          <div className="h-10 w-10 animate-spin rounded-full border-4 border-[#c7c4d7] border-t-[#4648d4]" />
+
+          <p className="text-[14px] text-[#464554]">
+            Checking your session...
+          </p>
+
+        </div>
+      </main>
+    )
   }
 
   if (!user) {
@@ -308,6 +352,5 @@ function App() {
     />
   )
 }
-
 
 export default App

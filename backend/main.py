@@ -81,8 +81,13 @@ security = HTTPBearer()
 # --------------------------------------------------
 
 def init_db():
+
     conn = sqlite3.connect(DATABASE_PATH)
 
+    # Enable foreign-key support in SQLite
+    conn.execute("PRAGMA foreign_keys = ON")
+
+    # Users table
     conn.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -91,6 +96,32 @@ def init_db():
             password_hash TEXT NOT NULL,
             created_at TEXT NOT NULL
         )
+    """)
+
+    # Documents table
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS documents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            user_id INTEGER NOT NULL,
+
+            filename TEXT NOT NULL,
+
+            original_filename TEXT NOT NULL,
+
+            created_at TEXT NOT NULL,
+
+            FOREIGN KEY (user_id)
+                REFERENCES users(id)
+                ON DELETE CASCADE
+        )
+    """)
+
+    # Index for quickly finding documents
+    # belonging to a specific user.
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_documents_user_id
+        ON documents(user_id)
     """)
 
     conn.commit()
@@ -105,8 +136,13 @@ init_db()
 # --------------------------------------------------
 
 def get_db_connection():
+
     conn = sqlite3.connect(DATABASE_PATH)
+
     conn.row_factory = sqlite3.Row
+
+    conn.execute("PRAGMA foreign_keys = ON")
+
     return conn
 
 
@@ -115,6 +151,7 @@ def get_db_connection():
 # --------------------------------------------------
 
 def hash_password(password: str) -> str:
+
     return pwd_context.hash(password)
 
 
@@ -122,6 +159,7 @@ def verify_password(
     plain_password: str,
     hashed_password: str
 ) -> bool:
+
     return pwd_context.verify(
         plain_password,
         hashed_password
@@ -137,7 +175,9 @@ def create_access_token(
     email: str
 ) -> str:
 
-    expire = datetime.now(timezone.utc) + timedelta(
+    expire = datetime.now(
+        timezone.utc
+    ) + timedelta(
         minutes=ACCESS_TOKEN_EXPIRE_MINUTES
     )
 
@@ -176,6 +216,7 @@ def get_current_user(
         email = payload.get("email")
 
         if user_id is None or email is None:
+
             raise HTTPException(
                 status_code=401,
                 detail="Invalid authentication token"
@@ -202,6 +243,7 @@ def get_current_user(
     conn.close()
 
     if user is None:
+
         raise HTTPException(
             status_code=401,
             detail="User not found"
@@ -214,7 +256,9 @@ def get_current_user(
 # Initialize Groq
 # --------------------------------------------------
 
-client = Groq(api_key=api_key)
+client = Groq(
+    api_key=api_key
+)
 
 
 # --------------------------------------------------
@@ -253,12 +297,16 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
+
     allow_origins=[
         "http://localhost:5173",
         "http://127.0.0.1:5173",
     ],
+
     allow_credentials=True,
+
     allow_methods=["*"],
+
     allow_headers=["*"],
 )
 
@@ -298,12 +346,20 @@ class ChatResponse(BaseModel):
     sources: list[Source]
 
 
+class DocumentResponse(BaseModel):
+    id: int
+    filename: str
+    original_filename: str
+    created_at: str
+
+
 # --------------------------------------------------
 # Basic routes
 # --------------------------------------------------
 
 @app.get("/")
 def root():
+
     return {
         "message": "Ragex API is running"
     }
@@ -311,6 +367,7 @@ def root():
 
 @app.get("/health")
 def health():
+
     return {
         "status": "ok"
     }
@@ -320,33 +377,48 @@ def health():
 # Register
 # --------------------------------------------------
 
-@app.post("/auth/register", response_model=AuthResponse)
-def register(request: RegisterRequest):
+@app.post(
+    "/auth/register",
+    response_model=AuthResponse
+)
+def register(
+    request: RegisterRequest
+):
 
     name = request.name.strip()
+
     email = request.email.strip().lower()
+
     password = request.password
+
 
     # Basic validation
     if not name:
+
         raise HTTPException(
             status_code=400,
             detail="Name is required"
         )
 
+
     if not email:
+
         raise HTTPException(
             status_code=400,
             detail="Email is required"
         )
 
+
     if len(password) < 6:
+
         raise HTTPException(
             status_code=400,
             detail="Password must be at least 6 characters"
         )
 
+
     conn = get_db_connection()
+
 
     # Check if email already exists
     existing_user = conn.execute(
@@ -358,6 +430,7 @@ def register(request: RegisterRequest):
         (email,)
     ).fetchone()
 
+
     if existing_user is not None:
 
         conn.close()
@@ -367,13 +440,18 @@ def register(request: RegisterRequest):
             detail="An account with this email already exists"
         )
 
+
     # Hash password
-    password_hash = hash_password(password)
+    password_hash = hash_password(
+        password
+    )
+
 
     # Create user
     created_at = datetime.now(
         timezone.utc
     ).isoformat()
+
 
     cursor = conn.execute(
         """
@@ -393,10 +471,14 @@ def register(request: RegisterRequest):
         )
     )
 
+
     user_id = cursor.lastrowid
 
+
     conn.commit()
+
     conn.close()
+
 
     # Create JWT
     access_token = create_access_token(
@@ -404,9 +486,12 @@ def register(request: RegisterRequest):
         email=email
     )
 
+
     return AuthResponse(
         access_token=access_token,
+
         token_type="bearer",
+
         user={
             "id": user_id,
             "name": name,
@@ -419,13 +504,21 @@ def register(request: RegisterRequest):
 # Login
 # --------------------------------------------------
 
-@app.post("/auth/login", response_model=AuthResponse)
-def login(request: LoginRequest):
+@app.post(
+    "/auth/login",
+    response_model=AuthResponse
+)
+def login(
+    request: LoginRequest
+):
 
     email = request.email.strip().lower()
+
     password = request.password
 
+
     conn = get_db_connection()
+
 
     user = conn.execute(
         """
@@ -436,7 +529,9 @@ def login(request: LoginRequest):
         (email,)
     ).fetchone()
 
+
     conn.close()
+
 
     # Don't reveal whether email exists
     # or password is incorrect.
@@ -444,10 +539,12 @@ def login(request: LoginRequest):
         password,
         user["password_hash"]
     ):
+
         raise HTTPException(
             status_code=401,
             detail="Invalid email or password"
         )
+
 
     # Create JWT
     access_token = create_access_token(
@@ -455,9 +552,12 @@ def login(request: LoginRequest):
         email=user["email"]
     )
 
+
     return AuthResponse(
         access_token=access_token,
+
         token_type="bearer",
+
         user={
             "id": user["id"],
             "name": user["name"],
@@ -472,7 +572,7 @@ def login(request: LoginRequest):
 
 @app.get("/auth/me")
 def get_me(
-    current_user = Depends(get_current_user)
+    current_user=Depends(get_current_user)
 ):
 
     return {
@@ -484,15 +584,67 @@ def get_me(
 
 
 # --------------------------------------------------
+# User documents
+# --------------------------------------------------
+
+@app.get(
+    "/documents",
+    response_model=list[DocumentResponse]
+)
+def get_documents(
+    current_user=Depends(get_current_user)
+):
+
+    conn = get_db_connection()
+
+
+    documents = conn.execute(
+        """
+        SELECT
+            id,
+            filename,
+            original_filename,
+            created_at
+        FROM documents
+        WHERE user_id = ?
+        ORDER BY created_at DESC
+        """,
+        (current_user["id"],)
+    ).fetchall()
+
+
+    conn.close()
+
+
+    return [
+        DocumentResponse(
+            id=document["id"],
+            filename=document["filename"],
+            original_filename=document["original_filename"],
+            created_at=document["created_at"]
+        )
+        for document in documents
+    ]
+
+
+# --------------------------------------------------
 # Chat / RAG endpoint
 # --------------------------------------------------
 
-@app.post("/chat", response_model=ChatResponse)
-def chat(request: ChatRequest):
+@app.post(
+    "/chat",
+    response_model=ChatResponse
+)
+def chat(
+    request: ChatRequest,
+    current_user=Depends(get_current_user)
+):
 
     query = request.message.strip()
 
+
     if not query:
+
         return ChatResponse(
             answer="Please enter a question.",
             sources=[]
@@ -533,12 +685,14 @@ Question:
     # Send context and question to Groq
     response = client.chat.completions.create(
         model="llama-3.3-70b-versatile",
+
         messages=[
             {
                 "role": "user",
                 "content": prompt
             }
         ],
+
         temperature=0
     )
 
@@ -549,19 +703,27 @@ Question:
     # Extract source metadata
     sources = []
 
+
     for doc in results:
 
         metadata = doc.metadata
 
         source = metadata.get("source")
+
         page = metadata.get("page")
+
 
         if source is not None:
 
             sources.append(
                 Source(
                     source=str(source),
-                    page=int(page) if page is not None else None
+
+                    page=(
+                        int(page)
+                        if page is not None
+                        else None
+                    )
                 )
             )
 
@@ -576,19 +738,26 @@ Question:
 # PDF endpoint
 # --------------------------------------------------
 
-@app.get("/pdf/{filename}")
-def get_pdf(filename: str):
+@app.get(
+    "/pdf/{filename}"
+)
+def get_pdf(
+    filename: str,
+    current_user=Depends(get_current_user)
+):
 
     # Only use the filename itself.
     # This prevents paths such as ../../something
     # from escaping the data directory.
     safe_filename = Path(filename).name
 
+
     pdf_path = DATA_DIR / safe_filename
 
 
     # Make sure the PDF exists
     if not pdf_path.exists():
+
         raise HTTPException(
             status_code=404,
             detail="PDF not found"
@@ -597,6 +766,7 @@ def get_pdf(filename: str):
 
     # Make sure it is actually a file
     if not pdf_path.is_file():
+
         raise HTTPException(
             status_code=404,
             detail="PDF not found"
@@ -605,6 +775,7 @@ def get_pdf(filename: str):
 
     # Only allow PDF files
     if pdf_path.suffix.lower() != ".pdf":
+
         raise HTTPException(
             status_code=400,
             detail="Only PDF files are allowed"
@@ -615,7 +786,9 @@ def get_pdf(filename: str):
     # instead of downloading it.
     return FileResponse(
         path=pdf_path,
+
         media_type="application/pdf",
+
         headers={
             "Content-Disposition": "inline"
         }
