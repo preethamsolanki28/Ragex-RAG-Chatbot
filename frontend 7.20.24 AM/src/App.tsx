@@ -5,7 +5,7 @@ import ChatPage from './pages/ChatPage'
 import DocumentsPage from './pages/DocumentsPage'
 import Sidebar from './components/Sidebar'
 import { ApiError, apiFetch } from './lib/api'
-import type { AuthResponse, ChatSummary, User } from './types'
+import type { AuthResponse, User } from './types'
 
 type View = 'chat' | 'documents'
 type AuthMode = 'login' | 'register'
@@ -16,38 +16,16 @@ function App() {
   const [authMode, setAuthMode] = useState<AuthMode>('login')
   const [view, setView] = useState<View>('chat')
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
-
   const [documentCount, setDocumentCount] = useState(0)
-  const [chats, setChats] = useState<ChatSummary[]>([])
-  const [activeChatId, setActiveChatId] = useState<number | null>(null)
+  const [chatKey, setChatKey] = useState(0)
 
   const clearSession = useCallback(() => {
     localStorage.removeItem('access_token')
     localStorage.removeItem('user')
     setUser(null)
-    setChats([])
-    setActiveChatId(null)
-    setDocumentCount(0)
     setView('chat')
+    setDocumentCount(0)
   }, [])
-
-  const loadChats = useCallback(async () => {
-    const data = await apiFetch<ChatSummary[]>('/chats')
-    setChats(data)
-    return data
-  }, [])
-
-  const handleAuthenticated = useCallback(
-    (data: AuthResponse) => {
-      localStorage.setItem('access_token', data.access_token)
-      localStorage.setItem('user', JSON.stringify(data.user))
-      setUser(data.user)
-      setView('chat')
-      setActiveChatId(null)
-      void loadChats()
-    },
-    [loadChats],
-  )
 
   useEffect(() => {
     const validateSession = async () => {
@@ -62,7 +40,6 @@ function App() {
         const currentUser = await apiFetch<User>('/auth/me')
         localStorage.setItem('user', JSON.stringify(currentUser))
         setUser(currentUser)
-        await loadChats()
       } catch (error) {
         if (error instanceof ApiError && error.status === 401) {
           clearSession()
@@ -75,56 +52,19 @@ function App() {
     }
 
     void validateSession()
-  }, [clearSession, loadChats])
+  }, [clearSession])
+
+  const handleAuthenticated = (data: AuthResponse) => {
+    localStorage.setItem('access_token', data.access_token)
+    localStorage.setItem('user', JSON.stringify(data.user))
+    setUser(data.user)
+    setView('chat')
+  }
 
   const handleNewChat = () => {
-    setActiveChatId(null)
+    setChatKey((current) => current + 1)
     setView('chat')
     setMobileSidebarOpen(false)
-  }
-
-  const handleSelectChat = (chatId: number) => {
-    setActiveChatId(chatId)
-    setView('chat')
-    setMobileSidebarOpen(false)
-  }
-
-  const handleDeleteChat = async (chatId: number) => {
-    try {
-      await apiFetch(`/chats/${chatId}`, { method: 'DELETE' })
-
-      setChats((current) =>
-        current.filter((chat) => chat.id !== chatId),
-      )
-
-      if (activeChatId === chatId) {
-        setActiveChatId(null)
-      }
-    } catch (error) {
-      if (error instanceof ApiError && error.status === 401) {
-        clearSession()
-      } else {
-        console.error('Could not delete chat:', error)
-      }
-    }
-  }
-
-  const handleChatCreated = (chat: ChatSummary) => {
-    setChats((current) => [
-      chat,
-      ...current.filter((item) => item.id !== chat.id),
-    ])
-    setActiveChatId(chat.id)
-  }
-
-  const handleChatUpdated = async () => {
-    try {
-      await loadChats()
-    } catch (error) {
-      if (error instanceof ApiError && error.status === 401) {
-        clearSession()
-      }
-    }
   }
 
   if (checkingSession) {
@@ -132,9 +72,7 @@ function App() {
       <main className="flex min-h-screen items-center justify-center bg-[#faf8ff] text-[#131b2e]">
         <div className="flex flex-col items-center gap-4">
           <div className="h-10 w-10 animate-spin rounded-full border-4 border-[#c7c4d7] border-t-[#4648d4]" />
-          <p className="text-[14px] text-[#464554]">
-            Checking your session...
-          </p>
+          <p className="text-[14px] text-[#464554]">Checking your session...</p>
         </div>
       </main>
     )
@@ -164,12 +102,8 @@ function App() {
         user={user}
         activeView={view}
         documentCount={documentCount}
-        chats={chats}
-        activeChatId={activeChatId}
         onNavigate={setView}
         onNewChat={handleNewChat}
-        onSelectChat={handleSelectChat}
-        onDeleteChat={handleDeleteChat}
         onLogout={clearSession}
         mobileOpen={mobileSidebarOpen}
         onCloseMobile={() => setMobileSidebarOpen(false)}
@@ -182,16 +116,12 @@ function App() {
           aria-label="Open navigation"
           className="fixed left-4 top-4 z-30 flex h-9 w-9 items-center justify-center rounded-lg bg-white text-[#464554] shadow md:hidden"
         >
-          <span className="material-symbols-outlined text-[20px]">
-            menu
-          </span>
+          <span className="material-symbols-outlined text-[20px]">menu</span>
         </button>
 
         {view === 'chat' ? (
           <ChatPage
-            activeChatId={activeChatId}
-            onChatCreated={handleChatCreated}
-            onChatUpdated={handleChatUpdated}
+            key={chatKey}
             onSessionExpired={clearSession}
             onDocumentCountChange={setDocumentCount}
           />

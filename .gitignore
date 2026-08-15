@@ -32,3 +32,12 @@ frontend/.vite/
 
 # Logs
 *.log
+
+# SQLite temporary files
+*.db-wal
+*.db-shm
+
+# Build / cache
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
