@@ -1,4 +1,5 @@
 import os
+import json
 import sqlite3
 import uuid
 
@@ -146,6 +147,69 @@ def init_db():
         """
         CREATE INDEX IF NOT EXISTS idx_documents_user_id
         ON documents(user_id)
+        """
+    )
+
+    # Chat history tables
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS chats (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+
+            FOREIGN KEY (user_id)
+                REFERENCES users(id)
+                ON DELETE CASCADE
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            sources TEXT NOT NULL DEFAULT '[]',
+            created_at TEXT NOT NULL,
+
+            FOREIGN KEY (chat_id)
+                REFERENCES chats(id)
+                ON DELETE CASCADE
+        )
+        """
+    )
+
+    message_columns = {
+        row[1]
+        for row in conn.execute(
+            "PRAGMA table_info(messages)"
+        ).fetchall()
+    }
+
+    if "sources" not in message_columns:
+        conn.execute(
+            """
+            ALTER TABLE messages
+            ADD COLUMN sources TEXT NOT NULL DEFAULT '[]'
+            """
+        )
+
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_chats_user_id
+        ON chats(user_id)
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_messages_chat_id
+        ON messages(chat_id)
         """
     )
 
@@ -380,7 +444,8 @@ class ChatRequest(BaseModel):
 
 
 class Source(BaseModel):
-    source: str
+    filename: str
+    name: str
     page: Optional[int] = None
 
 
@@ -402,6 +467,21 @@ class DocumentUploadResponse(BaseModel):
     original_filename: str
     created_at: str
     message: str
+
+
+class ChatSummary(BaseModel):
+    id: int
+    title: str
+    created_at: str
+    updated_at: str
+
+
+class ChatDetail(ChatSummary):
+    messages: list[dict]
+
+
+class CreateChatRequest(BaseModel):
+    title: str
 
 
 # --------------------------------------------------
@@ -648,6 +728,58 @@ def get_documents(
     ]
 
 
+@app.delete(
+    "/documents/{document_id}",
+    status_code=204,
+)
+def delete_document(
+    document_id: int,
+    current_user=Depends(get_current_user),
+):
+
+    conn = get_db_connection()
+
+    document = conn.execute(
+        """
+        SELECT filename
+        FROM documents
+        WHERE id = ?
+          AND user_id = ?
+        """,
+        (document_id, current_user["id"]),
+    ).fetchone()
+
+    if document is None:
+        conn.close()
+        raise HTTPException(
+            status_code=404,
+            detail="Document not found",
+        )
+
+    try:
+        # Document IDs are globally unique, so this cannot remove another
+        # user's chunks after the ownership check above.
+        db.delete(where={"document_id": document_id})
+        conn.execute(
+            "DELETE FROM documents WHERE id = ?",
+            (document_id,),
+        )
+        conn.commit()
+    except Exception as error:
+        conn.rollback()
+        print("Document deletion failed:", error)
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to delete the document",
+        )
+    finally:
+        conn.close()
+
+    pdf_path = DATA_DIR / document["filename"]
+    if pdf_path.exists():
+        pdf_path.unlink()
+
+
 # --------------------------------------------------
 # Upload PDF
 # --------------------------------------------------
@@ -851,6 +983,221 @@ async def upload_document(
 # Chat / user-specific RAG
 # --------------------------------------------------
 
+@app.get(
+    "/chats",
+    response_model=list[ChatSummary],
+)
+def get_chats(
+    current_user=Depends(get_current_user),
+):
+
+    conn = get_db_connection()
+    chats = conn.execute(
+        """
+        SELECT id, title, created_at, updated_at
+        FROM chats
+        WHERE user_id = ?
+        ORDER BY updated_at DESC
+        """,
+        (current_user["id"],),
+    ).fetchall()
+    conn.close()
+
+    return [ChatSummary(**dict(chat)) for chat in chats]
+
+
+@app.post(
+    "/chats",
+    response_model=ChatSummary,
+)
+def create_chat(
+    request: CreateChatRequest,
+    current_user=Depends(get_current_user),
+):
+
+    title = request.title.strip() or "New Chat"
+    now = datetime.now(timezone.utc).isoformat()
+    conn = get_db_connection()
+    cursor = conn.execute(
+        """
+        INSERT INTO chats (user_id, title, created_at, updated_at)
+        VALUES (?, ?, ?, ?)
+        """,
+        (current_user["id"], title[:120], now, now),
+    )
+    conn.commit()
+    chat_id = cursor.lastrowid
+    conn.close()
+
+    return ChatSummary(
+        id=chat_id,
+        title=title[:120],
+        created_at=now,
+        updated_at=now,
+    )
+
+
+def get_owned_chat(
+    conn,
+    chat_id: int,
+    user_id: int,
+):
+    return conn.execute(
+        """
+        SELECT id, title, created_at, updated_at
+        FROM chats
+        WHERE id = ? AND user_id = ?
+        """,
+        (chat_id, user_id),
+    ).fetchone()
+
+
+@app.get(
+    "/chats/{chat_id}",
+    response_model=ChatDetail,
+)
+def get_chat(
+    chat_id: int,
+    current_user=Depends(get_current_user),
+):
+
+    conn = get_db_connection()
+    chat_record = get_owned_chat(conn, chat_id, current_user["id"])
+
+    if chat_record is None:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Chat not found")
+
+    messages = conn.execute(
+        """
+        SELECT id, role, content, sources, created_at
+        FROM messages
+        WHERE chat_id = ?
+        ORDER BY id ASC
+        """,
+        (chat_id,),
+    ).fetchall()
+    conn.close()
+
+    chat_messages = []
+
+    for message in messages:
+        sources = json.loads(message["sources"])
+        normalized_sources = [
+            {
+                "filename": source.get(
+                    "filename",
+                    source.get("source", ""),
+                ),
+                "name": source.get(
+                    "name",
+                    source.get("original_filename")
+                    or source.get("source", ""),
+                ),
+                "page": source.get("page"),
+            }
+            for source in sources
+        ]
+
+        chat_messages.append(
+            {
+                "id": message["id"],
+                "role": message["role"],
+                "content": message["content"],
+                "sources": normalized_sources,
+                "created_at": message["created_at"],
+            }
+        )
+
+    return ChatDetail(
+        **dict(chat_record),
+        messages=chat_messages,
+    )
+
+
+@app.delete(
+    "/chats/{chat_id}",
+    status_code=204,
+)
+def delete_chat(
+    chat_id: int,
+    current_user=Depends(get_current_user),
+):
+
+    conn = get_db_connection()
+    cursor = conn.execute(
+        "DELETE FROM chats WHERE id = ? AND user_id = ?",
+        (chat_id, current_user["id"]),
+    )
+    conn.commit()
+    conn.close()
+
+    if cursor.rowcount == 0:
+        raise HTTPException(status_code=404, detail="Chat not found")
+
+
+@app.post(
+    "/chats/{chat_id}/messages",
+    response_model=ChatResponse,
+)
+def add_chat_message(
+    chat_id: int,
+    request: ChatRequest,
+    current_user=Depends(get_current_user),
+):
+
+    conn = get_db_connection()
+    chat_record = get_owned_chat(conn, chat_id, current_user["id"])
+
+    if chat_record is None:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Chat not found")
+
+    user_message = request.message.strip()
+    if not user_message:
+        conn.close()
+        return ChatResponse(answer="Please enter a question.", sources=[])
+
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """
+        INSERT INTO messages (chat_id, role, content, sources, created_at)
+        VALUES (?, 'user', ?, '[]', ?)
+        """,
+        (chat_id, user_message, now),
+    )
+    conn.commit()
+    conn.close()
+
+    response = chat(
+        ChatRequest(message=user_message),
+        current_user,
+    )
+
+    response_sources = [source.model_dump() for source in response.sources]
+    now = datetime.now(timezone.utc).isoformat()
+    conn = get_db_connection()
+    conn.execute(
+        """
+        INSERT INTO messages (chat_id, role, content, sources, created_at)
+        VALUES (?, 'assistant', ?, ?, ?)
+        """,
+        (
+            chat_id,
+            response.answer,
+            json.dumps(response_sources),
+            now,
+        ),
+    )
+    conn.execute(
+        "UPDATE chats SET updated_at = ? WHERE id = ?",
+        (now, chat_id),
+    )
+    conn.commit()
+    conn.close()
+
+    return response
+
 @app.post(
     "/chat",
     response_model=ChatResponse,
@@ -919,7 +1266,7 @@ Question:
 
     # Send context and question to Groq.
     response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model="openai/gpt-oss-120b",
 
         messages=[
             {
@@ -972,7 +1319,13 @@ Question:
 
         sources.append(
             Source(
-                source=source_name,
+                filename=source_name,
+                name=str(
+                    metadata.get(
+                        "original_filename",
+                        source_name,
+                    )
+                ),
                 page=page_number,
             )
         )
